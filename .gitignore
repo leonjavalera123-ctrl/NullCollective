@@ -1,0 +1,24 @@
+# ─── Python ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ─── Runtime save state ─────────────────────────────────────────────────
+# Written by the game as you play. Ignored so a playthrough never shows up
+# as an uncommitted change. The files stay on disk — your progress is safe.
+savegame.json
+progress.json
+village.json
+save.json
+*.save
+
+# ─── Scratch / OS / editor ──────────────────────────────────────────────
+out.txt
+err.txt
+*.log
+*.tmp
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
