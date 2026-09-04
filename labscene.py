@@ -120,6 +120,14 @@ class LabScene(Scene):
         self.solved = False
         self.show_hint = False
         self.show_solution = False
+        # --- Performance tally, read by the 3D office (see handoff.py) -------
+        # We count how much help you needed. `show_hint`/`show_solution` get
+        # reset for every challenge, so we must LATCH them the moment they turn
+        # on -- otherwise the evidence is wiped before anyone can read it.
+        self.stats = {"challenges": len(challenges), "solved": 0,
+                      "hints": 0, "solutions": 0, "skips": 0}
+        self._hint_counted = False       # already counted a hint THIS challenge?
+        self._solution_counted = False   # already counted a reveal THIS challenge?
         # This scene types into a terminal, so the global 'm'=mute shortcut must
         # NOT fire here (you need to type the letter m). Mute via the corner button.
         self.captures_text = True
@@ -142,6 +150,9 @@ class LabScene(Scene):
         self.solved = False
         self.show_hint = False
         self.show_solution = False
+        # A fresh challenge -- it hasn't cost you any help yet.
+        self._hint_counted = False
+        self._solution_counted = False
         ch = self.challenges[self.idx]
         # `seed` may be a dict or a function that returns one (for fresh data).
         seed = ch.get("seed")
@@ -153,8 +164,27 @@ class LabScene(Scene):
         self.term = PyTerminal(pygame.Rect(40, 250, WIDTH - 80, HEIGHT - 320),
                                seed=seed, intro=intro)
 
+    def finished(self):
+        """True once we've gone past the last challenge.
+
+        The lab keeps existing for a frame or two after that -- the game loop
+        draws and updates the current scene BEFORE it notices we asked to move
+        on -- so every method has to cope with being called one last time.
+        """
+        return self.idx >= len(self.challenges)
+
     def advance(self):
         """Move to the next challenge, or leave the lab for the boss fight."""
+        if self.finished():
+            return          # already done; a second click must not score again
+
+        # Score this challenge before we leave it. Leaving with it unsolved is
+        # a skip, however you got here (the Skip button, or Next after solving).
+        if self.solved:
+            self.stats["solved"] += 1
+        else:
+            self.stats["skips"] += 1
+
         # Carry any functions the player defined into the shared toolkit, so the
         # boss fight can actually run the code they just wrote.
         for fname, value in self.term.ns.items():
@@ -162,17 +192,35 @@ class LabScene(Scene):
                 self.game.toolkit[fname] = value
         self.idx += 1
         if self.idx >= len(self.challenges):
+            # Lab finished -- hand the tally to the game so it can be reported
+            # to the 3D office. Mirrors how `toolkit` is shared, just above.
+            #
+            # STAMP IT WITH THE LEVEL. There is only one `run_stats` slot, and
+            # you can leave a mission part-way (ESC) and go play a different
+            # lab. Without this stamp those numbers would be handed to the
+            # office as if they belonged to the mission it actually asked for.
+            self.game.run_stats = dict(self.stats, level=self.level_no)
             self.next_scene = self.target
         else:
             self.start_challenge()
 
     def handle_event(self, event):
+        if self.finished():
+            return          # the lab is over; ignore any last stray clicks
         # The terminal gets first crack at typing/scrolling.
         self.term.handle_event(event)
         if self.hint_btn.handle_event(event):
             self.show_hint = not self.show_hint
+            # Count the FIRST time help is opened on this challenge only. These
+            # buttons toggle, so without the latch, off-and-on would count twice.
+            if self.show_hint and not self._hint_counted:
+                self.stats["hints"] += 1
+                self._hint_counted = True
         if self.sol_btn.handle_event(event):
             self.show_solution = not self.show_solution
+            if self.show_solution and not self._solution_counted:
+                self.stats["solutions"] += 1
+                self._solution_counted = True
         if self.skip_btn.handle_event(event):
             self.advance()
         if self.clear_btn.handle_event(event):
@@ -181,6 +229,8 @@ class LabScene(Scene):
             self.advance()
 
     def update(self, dt):
+        if self.finished():
+            return          # <- without this, the line below reads past the end
         self.rain.update(dt)
         self.term.update(dt)
         if not self.solved:
@@ -195,6 +245,8 @@ class LabScene(Scene):
 
     def draw(self, surface):
         surface.fill(COLORS["bg"])
+        if self.finished():
+            return          # nothing left to show; we're leaving this frame
         self.rain.draw(surface)
         surface.blit(self.dim, (0, 0))
         self.draw_header(surface, f"LEVEL {self.level_no}  //  LAB: {self.topic}")

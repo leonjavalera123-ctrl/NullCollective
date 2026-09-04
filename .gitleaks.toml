@@ -1,0 +1,24 @@
+# gitleaks configuration for NULL Collective
+#
+# This game teaches security, so its level data is full of things that LOOK
+# like credentials: fake session tokens, example passwords, sample API keys.
+# gitleaks flags them on entropy alone and cannot tell teaching material from
+# the real thing, so the fixtures below are listed explicitly.
+#
+# The allowlist matches the exact fake values, NOT the files that hold them.
+# That is deliberate: a real key pasted into datalevels.py tomorrow still gets
+# caught. When you add a new lesson fixture that trips the hook, confirm it is
+# invented and then add its value here.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Invented tokens used as lesson fixtures, not real credentials"
+regexes = [
+  # levels.py "The Forger" -- teaches == by comparing a forged session token
+  # against the genuine one. The two differ only in the final character.
+  '''9f2c7a1e4b8d3c6[ab]''',
+  # Same lesson, len() challenge: a 32-character hex string to measure.
+  '''7f3a9c2e8b1d4a6f5e0c9b8a7d6e5f4c''',
+]

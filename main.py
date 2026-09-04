@@ -15,6 +15,7 @@ The actual content lives elsewhere:
 Read engine.py first, then this file, then the levels in order. Enjoy.
 """
 
+import os
 import sys
 import math
 import pygame
@@ -26,6 +27,7 @@ import save                                   # remembers progress between sessi
 import audio                                  # sound effects + music
 import lessons                                # the beginner Python lesson cards
 import bootcamp                               # Level 0: the absolute-beginner intro
+import handoff                                # lets the 3D office request a level
 import datalevels                             # extra levels defined purely as data
 from bosses import QuizBoss, FlagBoss         # the reusable data-driven boss fights
 from effects import MatrixRain                # the falling-code background
@@ -147,14 +149,19 @@ class TitleScene(Scene):
         if 0 < completed < NUM_LEVELS:
             add(f"Continue  (Level {completed + 1})", "continue")
             add("New Game", "newgame", color="gray")
-            add("Boot Camp  (Level 0)", "bootcamp", color="cyan")
+            add("Boot Camp", "bootcamp", color="cyan")
+            add("Field Notes  (lists & loops)", "fieldnotes", color="cyan")
         elif completed >= NUM_LEVELS:
             add("Play Again", "newgame")
-            add("Boot Camp  (Level 0)", "bootcamp", color="cyan")
+            add("Boot Camp", "bootcamp", color="cyan")
+            add("Field Notes  (lists & loops)", "fieldnotes", color="cyan")
         else:
             # Brand-new player: put Boot Camp first as the gentle starting point.
             add("Boot Camp  (new? start here)", "bootcamp")
             add("Start Mission", "newgame", color="cyan")
+            # The second on-ramp, for anyone who found Level 1 steep. Offered
+            # rather than imposed -- nothing is gated behind it.
+            add("Field Notes  (lists & loops)", "fieldnotes", color="cyan")
         add("Select Level  (replay)", "levels", color="cyan")
         add("Free Play  (Sandbox)", "sandbox", color="cyan")
         add("Glossary", "glossary", color="cyan")
@@ -170,7 +177,9 @@ class TitleScene(Scene):
             self.game.progress = save.reset()
             self.next_scene = "intro"
         elif action == "bootcamp":
-            self.next_scene = "bootcamp"
+            self.next_scene = "bootcamp0"
+        elif action == "fieldnotes":
+            self.next_scene = "bootcamp29"
         elif action == "levels":
             self.next_scene = "levels"
         elif action == "sandbox":
@@ -269,7 +278,12 @@ class Game:
         # Use our shield as the window/taskbar icon. Wrapped in try/except so the
         # game still runs even if the icon file is ever missing.
         try:
-            icon = pygame.image.load("assets/icon.png")
+            # Build an ABSOLUTE path from this file's own folder. A plain
+            # "assets/icon.png" is relative to whatever folder the game was
+            # STARTED from -- fine when you double-click it, but the 3D office
+            # launches us from somewhere else and the icon would silently vanish.
+            here = os.path.dirname(os.path.abspath(__file__))
+            icon = pygame.image.load(os.path.join(here, "assets", "icon.png"))
             pygame.display.set_icon(icon)
         except Exception:
             pass
@@ -294,11 +308,38 @@ class Game:
         # The "toolkit": functions YOU define in the labs get collected here and
         # carried into the boss fights, so the boss can run the code you wrote.
         self.toolkit = {}
+
+        # --- The 3D office handoff (see handoff.py) -------------------------
+        # If the office launched us with "--level 3", this is a dict; if you
+        # started the game normally it is None and everything below behaves
+        # exactly as it always has.
+        self.request = handoff.read_request()
+        self.last_level_n = None        # which level's debrief we reached
+        self.run_stats = None           # the lab's tally, filled in by LabScene
+        # Latched the moment the REQUESTED level is finished, so wandering off
+        # afterwards (ESC to the menu, replaying something else) can't change
+        # the verdict the office receives.
+        self.handoff_cleared = False
+        self.handoff_stats = None
+
         # `factories` maps a scene NAME to a function that builds a FRESH copy of
         # that scene. Building fresh each time means levels reset properly when
         # you replay them. We pass `self` (the game) into every scene.
         self.factories = self._build_factories()
-        self.scene = self.factories["menu"]()          # start on the title menu
+
+        # Normally we open on the title menu. If the office asked for a specific
+        # level, jump straight into that level's briefing instead.
+        start = "menu"
+        if self.request:
+            # Level 0 is the Boot Camp, which has no briefing and no boss --
+            # it's a lesson and a tiny lab, so it starts somewhere different.
+            # A boot camp has no briefing screen, so it starts somewhere else.
+            wanted = (f"bootcamp{self.request['level']}"
+                      if self.request["level"] in bootcamp.EXTRA_MODULES
+                      else f"brief{self.request['level']}")
+            if wanted in self.factories:
+                start = wanted
+        self.scene = self.factories[start]()
 
     def _build_factories(self):
         g = self
@@ -311,20 +352,52 @@ class Game:
             "sandbox": lambda: SandboxScene(g),
             "glossary": lambda: GlossaryScene(g),
             "levels": lambda: LevelSelectScene(g),
-            # Level 0 -- the absolute-beginner Boot Camp: a friendly lesson, then a
-            # tiny lab. It loops back to the menu when finished.
-            "bootcamp": lambda: IntelScene(g, 0, "BOOT CAMP: CODING FROM ZERO",
-                                           bootcamp.BOOTCAMP_LESSON, "bootcamplab",
-                                           code_label="// example:", accent="cyan",
-                                           final_label="Open the Lab >"),
-            "bootcamplab": lambda: LabScene(g, 0, "Your First Code",
-                                            bootcamp.BOOTCAMP_CHALLENGES, "menu",
-                                            final_label="Done -- Back to Menu >"),
+            # (the boot camps are added just below, from bootcamp.EXTRA_MODULES)
+            # Shown ONLY when the 3D office asked for this level. Its button
+            # closes the game so the office gets control back. Without this the
+            # debrief would chain into the NEXT level's briefing and the office
+            # would wait forever.
+            "handoff_done": lambda: TextScene(
+                g, "TASK COMPLETE",
+                "Corrective action recorded.\n\n"
+                "Close this window to return to the office and file your ticket.",
+                "Return to the office >", "__quit__", title_color="cyan"),
         }
+        # --- the boot camps ----------------------------------------------
+        # Optional on-ramps, not campaign missions: a lesson and a small lab,
+        # no villain and no boss. They're built from one table so adding
+        # another needs no new code here.
+        #
+        # Each gets scenes named after its level number, e.g. "bootcamp0" and
+        # "bootcamp0lab". When the office asked for one, the lab hands control
+        # back instead of returning to our menu -- a boot camp has no debrief,
+        # so finishing its lab IS finishing the mission.
+        for bc_level, mod in bootcamp.EXTRA_MODULES.items():
+            asked = bool(self.request and self.request["level"] == bc_level)
+            factories[f"bootcamp{bc_level}"] = (
+                lambda n=bc_level, mod=mod:
+                IntelScene(g, n, mod["title"] + ": CODING FROM ZERO"
+                           if n == 0 else mod["title"],
+                           mod["lesson"], f"bootcamp{n}lab",
+                           code_label="// example:", accent="cyan",
+                           final_label="Open the Lab >")
+            )
+            factories[f"bootcamp{bc_level}lab"] = (
+                lambda n=bc_level, mod=mod, asked=asked:
+                LabScene(g, n, mod["title"], mod["challenges"],
+                         "handoff_done" if asked else "menu",
+                         final_label=("Done -- back to the office >" if asked
+                                      else "Done -- Back to Menu >"))
+            )
+
         # Every level is a 5-part mission, built from its campaign provider:
         #   brief{n} -> intel{n} -> lesson{n} -> lab{n} -> level{n} (boss) -> debrief{n}
         for i, prov in enumerate(CAMPAIGN, start=1):
             after_debrief = f"brief{i + 1}" if i < NUM_LEVELS else "outro"
+            # If the office asked for THIS level, its debrief must end the
+            # session instead of rolling on into the next mission.
+            if self.request and self.request["level"] == i:
+                after_debrief = "handoff_done"
             title = f"LEVEL {i}  //  {prov['boss']}"
 
             # Default arguments (i=i, prov=prov, ...) "freeze" the current values so
@@ -365,18 +438,50 @@ class Game:
 
     def mark_complete_if_debrief(self, name):
         """If we're entering a debrief screen, that level is finished -- record it."""
+        # Boot Camp is the exception: it has no boss and no debrief, so reaching
+        # the end of its lab IS finishing it. Without this the office would wait
+        # for a debrief that never comes and grade a completed Boot Camp as
+        # "you left early".
+        if name == "handoff_done" and self.request \
+                and self.request["level"] in bootcamp.EXTRA_MODULES:
+            self.last_level_n = self.request["level"]
+            self.handoff_cleared = True
+            self.handoff_stats = dict(self.run_stats) if self.run_stats else {}
+            audio.play("win")
+            return
+
         if name.startswith("debrief"):
             try:
                 n = int(name[len("debrief"):])         # "debrief3" -> 3
             except ValueError:
                 return
-            if n > self.progress["completed"]:
+            self.last_level_n = n                      # remember for the report
+
+            # Did we just finish the mission the office sent us to do? Latch it
+            # NOW, together with the lab tally, so nothing done afterwards can
+            # rewrite history.
+            if self.request and n == self.request["level"]:
+                self.handoff_cleared = True
+                self.handoff_stats = dict(self.run_stats) if self.run_stats else {}
+
+            # Only the standalone campaign advances savegame.json. An office
+            # mission can send you to level 9 on your first day; recording that
+            # here would mark levels 1-8 complete in the standalone game and let
+            # you skip content you never played. The office keeps its own record
+            # in intern.json, so nothing is lost.
+            if self.request is None and n > self.progress["completed"]:
                 self.progress["completed"] = n
                 save.save(self.progress)               # persist to savegame.json
+
             audio.play("win")                          # celebrate a beaten level
 
     def go_to(self, name):
         """Switch to a brand-new instance of the named scene."""
+        # "__quit__" isn't a real screen -- it's how the handoff end screen tells
+        # us to shut down so the 3D office can take over again.
+        if name == "__quit__":
+            self.running = False
+            return
         self.mark_complete_if_debrief(name)
         if name in self.factories:
             self.scene = self.factories[name]()
@@ -430,8 +535,48 @@ class Game:
 
             pygame.display.flip()                      # reveal the finished frame
 
+        # The loop has ended, whatever the reason -- finished the mission, hit
+        # ESC, or closed the window. Report back BEFORE we shut down, so every
+        # exit route tells the office something rather than leaving it guessing.
+        self.write_handoff_report()
+
         pygame.quit()                                  # clean shutdown
         sys.exit()
+
+    def write_handoff_report(self):
+        """Tell the 3D office what happened this session (see handoff.py)."""
+        if not self.request:
+            return                                     # nobody is listening
+
+        asked = self.request["level"]
+        # Use the tally we snapshotted when the asked level was cleared. Fall
+        # back to whatever the last lab produced ONLY if it is stamped with the
+        # level we were asked about -- otherwise report no lab data at all,
+        # which grades as "not clean" rather than as somebody else's score.
+        stats = self.handoff_stats
+        if stats is None:
+            stats = self.run_stats or {}
+        if stats.get("level") != asked:
+            stats = {}
+
+        report = {
+            "session_id":   self.request["session"],
+            "asked_level":  asked,
+            "finished_level": self.last_level_n,
+            # Latched when the asked level's debrief was reached (see above).
+            "cleared":      self.handoff_cleared,
+            # The lab tally. Empty if the player never reached the lab.
+            "challenges":   stats.get("challenges", 0),
+            "solved":       stats.get("solved", 0),
+            "hints_shown":  stats.get("hints", 0),
+            "solutions_shown": stats.get("solutions", 0),
+            "skips":        stats.get("skips", 0),
+        }
+        # Work out the grade HERE, in one place, so the office never has to
+        # re-derive it and the two games can never disagree about what "clean"
+        # means. See handoff.is_clean() for the rule (hints are free).
+        report["clean"] = handoff.is_clean(report)
+        handoff.write_report(self.request["report"], report)
 
 
 # This standard line means "only run the game if THIS file was launched directly"
